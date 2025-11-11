@@ -35,11 +35,12 @@ class ToggleSwitch(QCheckBox):
         super().__init__(parent)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(60,28)
+        self.setFixedSize(60,28)
 
     def mousePressEvent(self, event):
-        """ Suprascrie clicul pentru a schimba starea manual. """
+        """Activează comutarea, dar lăsăm Qt să emită singur semnalul stateChanged."""
         self.setChecked(not self.isChecked())
-        event.accept()
+        super().mousePressEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -129,6 +130,7 @@ class TwoFactorPage(QWidget):
 
         self.verify_button.clicked.connect(self.on_verify)
         self.cancel_button.clicked.connect(self.login_2fa_failed.emit)
+        self.code_input.returnPressed.connect(self.on_verify)
         self.code_input.returnPressed.connect(self.on_verify)
 
     def set_secret(self, secret):
@@ -1539,11 +1541,13 @@ class SettingsDialog(QDialog):
 
         # --- CORECTURA FINALĂ: Ordinea corectă a logicii 2FA ---
 
-        # 1. Setăm starea inițială FĂRĂ a declanșa semnalul
+        # --- Stare inițială 2FA ---
         current_secret = get_totp_secret(self.username)
+        self.tfa_toggle.blockSignals(True)
         self.tfa_toggle.setChecked(current_secret is not None)
+        self.tfa_toggle.blockSignals(False)
 
-        # 2. Conectăm semnalul ACUM, pentru clicuri viitoare
+        # --- Conectăm semnalul ACUM ---
         self.tfa_toggle.stateChanged.connect(self.on_tfa_toggled)
 
     def open_change_password(self):
@@ -1558,128 +1562,209 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Success", "Password updated successfully!")
 
     def on_tfa_toggled(self, state):
-        """ Corectat pentru a preveni crash-ul 0xC0000409. """
+        """Gestionare sigură a comutatorului 2FA."""
+        self.tfa_toggle.blockSignals(True)  # prevenim semnalele duble
+        self.tfa_toggle.setChecked(state)
+        self.tfa_toggle.blockSignals(False)
+
         if state == Qt.Checked:
-            QTimer.singleShot(0, self.open_enable_2fa_dialog)
+            self.open_enable_2fa_dialog()
         else:
-            QTimer.singleShot(0, self.open_disable_2fa_dialog)
+            self.open_disable_2fa_dialog()
 
     def open_enable_2fa_dialog(self):
-        """ Funcție ajutătoare apelată de QTimer pentru a deschide dialogul 2FA în siguranță. """
-        try:
-            dialog = Enable2FADialog(self.username, self)
-            if dialog.exec_() == QDialog.Accepted:
-                print("2FA Enabled")
-            else:
-                # Utilizatorul a anulat sau a eșuat
-                print("2FA enabling cancelled or failed.")
+        """Activează 2FA în siguranță."""
+        dialog = Enable2FADialog(self.username, self)
+        dialog.enabled_successfully.connect(lambda secret: self._sync_toggle_state(True))
+        result = dialog.exec_()
 
-                # Blocăm semnalele pentru a preveni bucla
-                self.tfa_toggle.blockSignals(True)
-                self.tfa_toggle.setChecked(False)  # Comută butonul înapoi pe OFF
-                self.tfa_toggle.blockSignals(False)  # Reactivăm semnalele
-        except Exception as e:
-            print(f"EROARE la deschiderea Enable2FADialog: {e}")
-            QMessageBox.critical(self, "Eroare Dependințe",
-                                 f"Nu s-a putut deschide dialogul 2FA:\n{e}\n\nVerifică dacă 'pyotp' și 'qrcode' sunt instalate.")
-            self.tfa_toggle.blockSignals(True)
-            self.tfa_toggle.setChecked(False)  # Și comutăm înapoi pe OFF
-            self.tfa_toggle.blockSignals(False)
-
+        # Dacă utilizatorul a închis fără succes
+        if result != QDialog.Accepted:
+            if not get_totp_secret(self.username):
+                self._sync_toggle_state(False)
 
     def open_disable_2fa_dialog(self):
-        """ Funcție ajutătoare apelată de QTimer pentru a dezactiva 2FA în siguranță. """
-        reply = QMessageBox.question(self, "Disable 2FA",
-                                     "Are you sure you want to disable Two-Factor Authentication?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            set_totp_secret(self.username, None)  # Șterge cheia din DB
-            QMessageBox.information(self, "Success", "2FA has been disabled.")
-        else:
-            self.tfa_toggle.blockSignals(True)
-            self.tfa_toggle.setChecked(True)  # Comută butonul înapoi pe ON
-            self.tfa_toggle.blockSignals(False)
+        """Cere codul 2FA înainte de a dezactiva protecția, fără crash."""
+        try:
+            secret = get_totp_secret(self.username)
+            if not secret:
+                QMessageBox.information(self, "2FA Disabled", "2FA is already off.")
+                self._sync_toggle_state(False)
+                return
+
+            # Creăm dialogul mic pentru verificarea codului
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Disable 2FA Verification")
+            dialog.setModal(True)
+            dialog.setMinimumWidth(350)
+            dialog.setStyleSheet(self.styleSheet())
+
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+
+            label = QLabel("Enter your 6-digit 2FA code to disable:")
+            input_code = QLineEdit()
+            input_code.setAlignment(Qt.AlignCenter)
+            input_code.setMaxLength(6)
+            input_code.setPlaceholderText("e.g. 123456")
+            msg = QLabel("")
+            msg.setStyleSheet("color: #FF5555; font-weight: bold;")
+
+            btns = QHBoxLayout()
+            cancel_btn = QPushButton("Cancel")
+            confirm_btn = QPushButton("Verify & Disable")
+            cancel_btn.setStyleSheet("background-color: #4A4A4A;")
+            btns.addStretch()
+            btns.addWidget(cancel_btn)
+            btns.addWidget(confirm_btn)
+
+            layout.addWidget(label)
+            layout.addWidget(input_code)
+            layout.addWidget(msg)
+            layout.addLayout(btns)
+
+            confirmed = {"ok": False}
+
+            def verify_code():
+                code = input_code.text().strip()
+                if not code.isdigit() or len(code) != 6:
+                    msg.setText("Invalid code format.")
+                    return
+                import pyotp
+                totp = pyotp.TOTP(secret)
+                if totp.verify(code):
+                    set_totp_secret(self.username, None)
+                    QMessageBox.information(self, "2FA Disabled", "Two-Factor Authentication has been disabled.")
+                    confirmed["ok"] = True
+                    dialog.close()
+                else:
+                    msg.setText("Incorrect code. Try again.")
+
+            confirm_btn.clicked.connect(verify_code)
+            cancel_btn.clicked.connect(dialog.reject)
+
+            dialog.exec_()
+
+            if confirmed["ok"]:
+                self._sync_toggle_state(False)
+            else:
+                self._sync_toggle_state(True)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred:\n{e}")
+            self._sync_toggle_state(True)
+
+    def _sync_toggle_state(self, enabled: bool):
+        """Resetează sigur starea toggle-ului fără semnale în buclă."""
+        self.tfa_toggle.blockSignals(True)
+        self.tfa_toggle.setChecked(enabled)
+        self.tfa_toggle.blockSignals(False)
+
 class Enable2FADialog(QDialog):
-    def __init__(self,username,parent=None):
+    enabled_successfully = pyqtSignal(str)  # semnal emis dacă 2FA s-a activat corect
+
+    def __init__(self, username, parent=None):
         super().__init__(parent)
-        self.username=username
-        self.setStyleSheet(parent.styleSheet())
+        self.username = username
         self.setWindowTitle("Enable 2FA")
+        self.setModal(True)
         self.setMinimumWidth(400)
 
-        layout=QVBoxLayout()
-        layout.setSpacing(15)
-        layout.setContentsMargins(20,20,20,20)
-        self.secret_key = pyotp.random_base32()
-        uri = pyotp.totp.TOTP(self.secret_key).provisioning_uri(
-            name=self.username,
-            issuer_name="Cryptic Safe"
+        try:
+            self.setStyleSheet(parent.styleSheet())
+        except Exception:
+            pass  # dacă parent e None, ignorăm
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        import pyotp, qrcode, io
+
+        try:
+            # 1️⃣ — generăm un nou secret
+            self.secret_key = pyotp.random_base32()
+            totp = pyotp.TOTP(self.secret_key)
+            uri = totp.provisioning_uri(name=self.username, issuer_name="Cryptic Safe")
+
+            # 2️⃣ — generăm imaginea QR
+            qr_image = qrcode.make(uri)
+            buffer = io.BytesIO()
+            qr_image.save(buffer, "PNG")
+
+            qr_pixmap = QPixmap()
+            qr_pixmap.loadFromData(buffer.getvalue(), "PNG")
+
+            qr_label = QLabel()
+            qr_label.setPixmap(qr_pixmap.scaled(220, 220, Qt.KeepAspectRatio))
+            qr_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(qr_label)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate QR Code:\n{e}")
+            self.reject()
+            return
+
+        info_label = QLabel(
+            "Scan this QR code using your authenticator app (Google Authenticator, Authy, etc.)\n"
+            "Then enter the 6-digit code below to verify and enable 2FA."
         )
-        qr_image=qrcode.make(uri)
-
-        buffer = io.BytesIO()
-        qr_image.save(buffer, "PNG")
-        qr_pixmap = QPixmap()
-        qr_pixmap.loadFromData(buffer.getvalue(), "PNG")
-
-        qr_label = QLabel()
-        qr_label.setPixmap(qr_pixmap.scaled(250, 250, Qt.KeepAspectRatio))
-        qr_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(qr_label)
-        info_label = QLabel("Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.).")
         info_label.setWordWrap(True)
         info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(info_label)
-        verify_label = QLabel("Enter the 6-digit code to verify:")
+
+        # 3️⃣ — input pentru cod
         self.code_input = QLineEdit()
         self.code_input.setAlignment(Qt.AlignCenter)
         self.code_input.setMaxLength(6)
-
-        layout.addWidget(verify_label)
+        self.code_input.setPlaceholderText("e.g. 123456")
         layout.addWidget(self.code_input)
 
         self.message_label = QLabel("")
-        self.message_label.setStyleSheet("color: #FF5555;")  # Roșu
+        self.message_label.setStyleSheet("color: #FF5555; font-weight: bold;")
         layout.addWidget(self.message_label)
 
-        # 6. Butoane
-        button_layout = QHBoxLayout()
-        self.verify_button = QPushButton("Verify & Enable")
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setStyleSheet("background-color: #4A4A4A;")
+        # 4️⃣ — butoane
+        buttons = QHBoxLayout()
+        self.cancel_btn = QPushButton("Cancel")
+        self.verify_btn = QPushButton("Verify & Enable")
+        self.cancel_btn.setStyleSheet("background-color: #4A4A4A;")
+        buttons.addStretch()
+        buttons.addWidget(self.cancel_btn)
+        buttons.addWidget(self.verify_btn)
+        layout.addLayout(buttons)
 
-        button_layout.addStretch()
-        button_layout.addWidget(self.cancel_button)
-        button_layout.addWidget(self.verify_button)
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
-
-        self.verify_button.clicked.connect(self.on_verify)
-        self.cancel_button.clicked.connect(self.reject)  # Închide dialogul
+        # 5️⃣ — conexiuni
+        self.cancel_btn.clicked.connect(self.reject)
+        self.verify_btn.clicked.connect(self.on_verify)
 
     def on_verify(self):
-        code = self.code_input.text()
+        """Verifică codul introdus și salvează secretul în baza de date."""
+        import pyotp
+
+        code = self.code_input.text().strip()
         if not code.isdigit() or len(code) != 6:
             self.message_label.setText("Please enter a valid 6-digit code.")
             return
 
-        # Verifică dacă codul este corect
-        totp = pyotp.TOTP(self.secret_key)
-        if totp.verify(code):
-            # Codul e corect! Salvăm cheia în baza de date
+        try:
+            totp = pyotp.TOTP(self.secret_key)
+            if not totp.verify(code):
+                self.message_label.setText("Incorrect code. Try again.")
+                return
+
+            # 6️⃣ — salvăm în baza de date
             success = set_totp_secret(self.username, self.secret_key)
-            if success:
-                QMessageBox.information(self, "Success", "2FA has been enabled successfully!")
-                self.accept()  # Închide cu succes
-            else:
-                # --- AICI ESTE MODIFICAREA ---
-                # Am schimbat QLabel cu un QMessageBox
-                QMessageBox.critical(self, "Eroare Bază de Date",
-                                     "Eroare: Nu s-a putut salva secretul 2FA în baza de date.")
-                # self.message_label.setText("Failed to save 2FA secret to database.")
-        else:
-            self.message_label.setText("Invalid code. Please try again.")
+            if not success:
+                self.message_label.setText("Database error. Could not save 2FA secret.")
+                return
+
+            QMessageBox.information(self, "Success", "2FA has been enabled successfully!")
+            self.enabled_successfully.emit(self.secret_key)
+            self.accept()
+
+        except Exception as e:
+            self.message_label.setText(f"Error during verification: {e}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
