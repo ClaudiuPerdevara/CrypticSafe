@@ -1,0 +1,14 @@
+# Folderul de mediu virtual
+.venv/
+venv/
+
+# Fișiere de cache Python
+__pycache__/
+*.pyc
+
+# Baza de date locală (NU o urca!)
+users.db
+
+# Fișierele IDE (dacă folosești VSCode sau PyCharm)
+.vscode/
+.idea/
