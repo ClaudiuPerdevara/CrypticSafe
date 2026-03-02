@@ -1,7 +1,3 @@
-I built a secure, multi-user file explorer with Python and PyQt5. It's an encrypted digital vault; files dragged into the app are encrypted on-the-fly and become completely unreadable from the normal file system. To get in, each user needs their password and a 6-digit 2FA code from their phone, just like a Google account. Real file encryption using AES-GCM. Uses a proper KEK/DEK model (your password unlocks the encryption key, it doesn't become it). Python, PyQt5, cryptography library, pyotp, sqlite3
-
-
-
 # 🔐 CrypticSafe
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
@@ -32,7 +28,9 @@ This application does not simply use passwords as encryption keys. It implements
 
 ## 🚀 How to Run
 
-1. Clone the repository:
    ```bash
    git clone [https://github.com/ClaudiuPerdevara/CrypticSafe.git](https://github.com/ClaudiuPerdevara/CrypticSafe.git)
    cd CrypticSafe
+   pip install cryptography pyotp PyQt5
+   python main.py
+   ```
