@@ -29,8 +29,8 @@ This application does not simply use passwords as encryption keys. It implements
 ## 🚀 How to Run
 
    ```bash
-   git clone [https://github.com/ClaudiuPerdevara/CrypticSafe.git](https://github.com/ClaudiuPerdevara/CrypticSafe.git)
+   git clone https://github.com/ClaudiuPerdevara/CrypticSafe.git
    cd CrypticSafe
-   pip install cryptography pyotp PyQt5
+   pip install cryptography pyotp PyQt5 bcrypt qrcode 
    python main.py
    ```
